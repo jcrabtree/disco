@@ -126,9 +126,25 @@ Possible settings for Disco are as follows:
 
         .. envvar:: DISCO_GC_AFTER
 
-                How long to wait before garbage collecting data.
+                How long to wait before garbage collecting job-generated intermediate and result data.
                 Only results explictly saved to DDFS won't be garbage collected.
-                Default is ``100 * 365 * 24 * 60 * 60`` (100 years).
+                Default is ``100 * 365 * 24 * 60 * 60`` (100 years).  (Note that this setting does not affect data in DDFS.)
+
+        .. envvar:: DISCO_PROFILE
+
+                Whether Disco should start profiling applications and send profiling data to
+                a graphite server.
+
+        .. envvar:: GRAPHITE_HOST
+                If DISCO_PROFILE is set, then some performance data from Disco
+                will be sent to the graphite host.  The default is localhost.
+                We are assuming that the listening port is the default graphite
+                port.
+
+        .. envvar:: SYSTEMD_ENABLED
+
+                This adds -noshell to the erlang process. It provides compatibility for running
+                disco using a non-forking process type in the service definition.
 
         .. envvar:: DISCO_WORKER_MAX_MEM
 
@@ -228,6 +244,11 @@ Settings used by DDFS:
                 The amount of time to wait after startup before running GC (in minutes).
                 Default is ``''``, which triggers an internal default of 5 minutes.
 
+        .. envvar:: DDFS_GC_BALANCE_THRESHOLD
+                The distance a node's disk utilization can be from the average
+                disk utilization of the cluster before the node is considered
+                to be over-utilized or under-utilized.  Default is ``0.1``.
+
         .. envvar:: DDFS_PARANOID_DELETE
 
                 Instead of deleting unneeded files, DDFS garbage collector prefixes obsolete files with ``!trash.``, so they can be safely verified/deleted by an external process. For instance, the following command can be used to finally delete the files (assuming that ``DDFS_DATA = "/srv/disco/ddfs"``)::
@@ -254,6 +275,20 @@ The following settings are used by DDFS to determine the number of replicas for 
 
                 The number of replicas of blobs that DDFS should aspire to keep.
                 Default is ``1``.
+
+        .. envvar:: DDFS_SPACE_AWARE
+
+                Whether DDFS should take the amount of free space in the nodes
+                into account when choosing the nodes to write to.  Default is
+                ````.
+
+        .. envvar:: DDFS_ABSOLUTE_SPACE
+
+                Only effective in the space-aware mode.
+                If set, the nodes with the higher absolute free space will be
+                given precedence for hosting replicas.  If unset, the nodes with
+                the highest ratio of the free space to the total space will be
+                given precedence for hosting the replicas.
 """
 import os, socket, pwd
 
@@ -287,6 +322,11 @@ class DiscoSettings(Settings):
         'DISCO_WWW_ROOT':        "os.path.join(DISCO_MASTER_HOME, 'www')",
 # GC
         'DISCO_GC_AFTER':        "100 * 365 * 24 * 60 * 60",
+#'PROFILE'
+        'DISCO_PROFILE':         "'False'",
+        'GRAPHITE_HOST':         "'localhost'",
+# OTHER
+        'SYSTEMD_ENABLED':       "False",
 # PROXY
         'DISCO_PROXY_ENABLED':   "''",
         'DISCO_PROXY':           "''",
@@ -303,6 +343,8 @@ class DiscoSettings(Settings):
         'DISCO_TEST_PROFILE':    "''",
         'DISCO_TEST_PURGE':      "'purge'",
 # DDFS
+        'DDFS_SPACE_AWARE':      "''",
+        'DDFS_ABSOLUTE_SPACE':   "''",
         'DDFS_ROOT':             "os.path.join(DISCO_ROOT, 'ddfs')",
         'DDFS_DATA':             "DDFS_ROOT",
         'DDFS_PUT_PORT':         "8990",
@@ -314,7 +356,8 @@ class DiscoSettings(Settings):
         'DDFS_TAG_REPLICAS':     "1",
         'DDFS_BLOB_REPLICAS':    "1",
         'DDFS_PARANOID_DELETE':  "''",
-        'DDFS_GC_INITIAL_WAIT':  "''"
+        'DDFS_GC_INITIAL_WAIT':  "''",
+        'DDFS_GC_BALANCE_THRESHOLD': "0.1"
         }
 
     globals = globals()
@@ -333,21 +376,28 @@ class DiscoSettings(Settings):
         for name in self.must_exist:
             self.safedir(name)
         config = self['DISCO_MASTER_CONFIG']
+        try:
+            import multiprocessing
+            nCpus = multiprocessing.cpu_count()
+        except:
+            nCpus = 1
+
         if not os.path.exists(config):
-            open(config, 'w').write('[["localhost","1"]]')
+            open(config, 'w').write('[["localhost","{}"]]'.format(nCpus))
 
 def job_owner():
     return "%s@%s" % (pwd.getpwuid(os.getuid()).pw_name,
                       socket.gethostname())
 
 def guess_erlang():
-    if os.uname()[0] == 'Darwin':
+    if os.uname()[0] == 'Darwin' and int(os.uname()[2].split('.')[0]) < 14:
         return '/usr/libexec/StartupItemContext erl'
     return 'erl'
 
 def guess_home():
     from disco.error import DiscoError
-    disco_lib  = os.path.dirname(os.path.realpath(__file__))
+    from disco.fileutils import get_valid_path
+    disco_lib  = os.path.dirname(get_valid_path(__file__))
     disco_home = os.path.dirname(os.path.dirname(disco_lib))
     if os.path.exists(os.path.join(disco_home, '.disco-home')):
         return disco_home

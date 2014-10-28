@@ -22,6 +22,7 @@ set_env(Key, Default) ->
     ok = application:set_env(disco, Key, Val).
 
 init_settings() ->
+    set_env(accept_new_jobs, 1),
     set_env(max_failure_rate, ?TASK_MAX_FAILURES).
 
 -spec write_pid(path()) -> ok.
@@ -34,7 +35,12 @@ write_pid(PidFile) ->
 
 -spec start(_, _) -> {ok, pid()} | {error, term()}.
 start(_Type, _Args) ->
+    ok = application:start(compiler),
+    ok = application:start(syntax_tools),
+    ok = application:start(goldrush),
     ok = application:start(lager),
+    ok = disco_profile:start_apps(),
+    ok = inets:start(),
     init_settings(),
     write_pid(disco:get_setting("DISCO_MASTER_PID")),
     Port = disco:get_setting("DISCO_PORT"),

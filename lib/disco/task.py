@@ -8,6 +8,7 @@ This module defines objects for interfacing with
 """
 import os, time
 
+from disco.compat import basestring, integer_types
 from disco import dPickle
 from disco.util import hexhash
 
@@ -56,26 +57,33 @@ class Task(object):
                  put_port=None,
                  ddfs_data='',
                  disco_data='',
-                 mode=None,
+                 stage=None,
+                 group=None,
+                 grouping=None,
                  taskid=-1):
         from disco.job import JobPack
+        from disco.ddfs import DDFS
         self.host = host
         self.jobfile = jobfile
         self.jobname = jobname
-        self.jobpack = JobPack.load(open(jobfile))
+        self.jobpack = JobPack.load(open(jobfile, 'rb'))
         self.jobobjs = dPickle.loads(self.jobpack.jobdata)
         self.master = master
         self.disco_port = disco_port
         self.put_port = put_port
         self.ddfs_data = ddfs_data
         self.disco_data = disco_data
-        self.mode = mode
+        self.stage = stage
+        self.group = '{0[0]}-{0[1]}'.format(group)
+        self.group_label, self.group_host = group
+        self.grouping = grouping
         self.taskid = taskid
         self.outputs = {}
-        self.uid = '%s:%s-%s-%x' % (mode,
-                                    taskid,
-                                    hexhash(str((time.time()))),
-                                    os.getpid())
+        self.uid = '{0}:{1}-{2}-{3}-{4}'.format(self.stage,
+                                                DDFS.safe_name(self.group),
+                                                self.taskid,
+                                                hexhash(str((time.time())).encode()),
+                                                os.getpid())
 
     @property
     def jobpath(self):
@@ -83,18 +91,24 @@ class Task(object):
 
     @property
     def taskpath(self):
-        return os.path.join(hexhash(self.uid), self.uid)
+        return os.path.join(hexhash(self.uid.encode()), self.uid)
 
     def makedirs(self):
         from disco.fileutils import ensure_path
         ensure_path(self.taskpath)
 
-    def output(self, partition=None, type='disco'):
-        if partition is None:
-            return self.path(self.uid), type, '0'
-        elif not isinstance(partition, basestring):
-            raise ValueError("Partition label must be a string or None")
-        return self.path('%s-%s' % (self.mode, partition)), 'part', partition
+    def output_filename(self, label):
+        if not isinstance(label, integer_types):
+            raise ValueError("Output label ({0} : {1}) must be an integer or None".format(label, type(label)))
+        return '{0}-{1}-{2}'.format(self.stage, self.group, label)
+
+    def output_path(self, label):
+        return self.path(self.output_filename(label))
+
+    def output(self, label=None, typ='disco'):
+        if label is None:
+            return self.path(self.uid), typ, 0
+        return self.output_path(label), 'part', label
 
     def path(self, name):
         """
@@ -103,7 +117,7 @@ class Task(object):
         return os.path.join(self.taskpath, name)
 
     def url(self, name, scheme='disco'):
-        return '%s://%s/disco/%s/%s/%s' % (scheme, self.host, self.jobpath, self.taskpath, name)
+        return '{0}://{1}/disco/{2}/{3}/{4}'.format(scheme, self.host, self.jobpath, self.taskpath, name)
 
     def get(self, key):
         """
@@ -117,7 +131,7 @@ class Task(object):
 
     def put(self, key, value):
         """
-        Stores an out-of-band result *value* with the key *key*.
+        Stores an out-of-band result *value* (bytes) with the key *key*.
 
         Key must be unique in this job.
         Maximum key length is 256 characters.
@@ -125,6 +139,7 @@ class Task(object):
         """
         from disco.ddfs import DDFS
         from disco.util import save_oob
+        from disco.error import DiscoError
         if DDFS.safe_name(key) != key:
-            raise DiscoError("OOB key contains invalid characters (%s)" % key)
+            raise DiscoError("OOB key contains invalid characters ({0})".format(key))
         save_oob(self.master, self.jobname, key, value)

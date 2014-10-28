@@ -1,8 +1,7 @@
 -module(json_validator_test).
+-include_lib("eunit/include/eunit.hrl").
 
--export([test/0]).
-
-test() ->
+json_test() ->
     Tests = [{null, "null"},
              {integer, "1"},
              {integer, "-1"},

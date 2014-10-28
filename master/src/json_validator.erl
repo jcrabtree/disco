@@ -25,7 +25,7 @@ validate(boolean, Payload) when is_boolean(Payload)-> ok;
 validate(float, Payload) when is_float(Payload) -> ok;
 validate(string, Payload) when is_binary(Payload) -> ok;
 validate(Type, Payload) when is_atom(Type) ->
-    {error, {list_to_atom("not_" ++ atom_to_list(Type)), Payload}};
+    {error, {list_to_existing_atom("not_" ++ atom_to_list(Type)), Payload}};
 
 % heterogenous lists
 validate({array, _Types}, Payload) when not is_list(Payload) ->
@@ -75,9 +75,9 @@ validate({opt, Types}, Payload) ->
 
 -spec validate_key({binary(), spec()}, term()) -> ok | {error, tuple()}.
 validate_key({Key, Type}, Payload) ->
-    case proplists:get_value(Key, Payload) of
-        undefined -> {error, {missing_key, Key, Payload}};
-        Value -> validate(Type, Value)
+    case lists:keyfind(Key, 1, Payload) of
+        false -> {error, {missing_key, Key, Payload}};
+        {_, Value} -> validate(Type, Value)
     end.
 
 -spec error_msg(error()) -> iolist().

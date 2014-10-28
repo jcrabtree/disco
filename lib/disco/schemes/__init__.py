@@ -26,8 +26,8 @@ from disco import util
 
 def import_scheme(url):
     scheme, _rest = util.schemesplit(url)
-    scheme = 'scheme_%s' % (scheme or 'file')
-    return __import__('disco.schemes.%s' % scheme, fromlist=[scheme])
+    scheme = 'scheme_{0}'.format((scheme or 'file'))
+    return __import__('disco.schemes.{0}'.format(scheme), fromlist=[scheme])
 
 def input_stream(stream, size, url, params, globals=globals()):
     input_stream = import_scheme(url).input_stream
@@ -38,5 +38,5 @@ def open(url, task=None):
     return import_scheme(url).open(url, task=task)
 
 def open_chain(url, task=None):
-    from disco.worker.classic.func import chain_reader
+    from disco.worker.task_io import chain_reader
     return chain_reader(open(url, task=task), None, url)

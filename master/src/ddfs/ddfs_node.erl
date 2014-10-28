@@ -12,12 +12,14 @@
 -include("ddfs.hrl").
 -include("ddfs_tag.hrl").
 
--record(state, {nodename :: string(),
+-type tag_map() :: disco_gbtree(binary(), {erlang:timestamp(), volume_name()}).
+
+-record(state, {nodename :: host(),
                 root :: path(),
                 vols :: [volume()],
                 putq :: http_queue:q(),
                 getq :: http_queue:q(),
-                tags :: gb_tree(),
+                tags :: tag_map(),
                 scanner :: pid()}).
 -type state() :: #state{}.
 
@@ -28,7 +30,15 @@ start_link(Config, NodeMon) ->
                  {local, ?MODULE}, ?MODULE, Config, [{timeout, ?NODE_STARTUP}]) of
         {ok, _Server} ->
             error_logger:info_msg("~p starts on ~p", [?MODULE, node()]),
-            ok;
+            ok = case node() =:= node(NodeMon) of
+                false ->
+                    ok = inets:start(),
+                    disco_profile:start_apps();
+                true -> ok
+            end,
+            disco_profile:new_histogram(ddfs_traverse_blobs),
+            disco_profile:new_histogram(ddfs_traverse_tags),
+            disco_profile:new_histogram(ddfs_put);
         {error, {already_started, _Server}} ->
             error_logger:info_msg("~p already started on ~p", [?MODULE, node()]),
             exit(already_started);
@@ -162,7 +172,7 @@ handle_call({put_tag_commit, Tag, TagVol}, _, S) ->
 
 -type casts() :: rescan_tags
                | {update_vols, [volume()]}
-               | {update_tags, gb_tree()}.
+               | {update_tags, tag_map()}.
 -spec handle_cast(casts(), state()) -> gs_noreply().
 handle_cast(rescan_tags, #state{scanner = Scanner} = S) ->
     Scanner ! rescan,
@@ -250,17 +260,14 @@ do_get_tag_timestamp(TagName, #state{tags = Tags}) ->
 
 -spec do_get_tag_data(tagid(), volume_name(), {pid(), _}, state()) -> ok.
 do_get_tag_data(TagId, VolName, From, #state{root = Root}) ->
-    {ok, TagDir, _Url} = ddfs_util:hashdir(TagId,
-                                           disco:host(node()),
-                                           "tag",
-                                           Root,
-                                           VolName),
-    TagPath = filename:join(TagDir, binary_to_list(TagId)),
+    {ok, TagDir} = ddfs_util:hashdir(TagId, "tag", Root, VolName),
+    TagPath = TagDir ++ "/" ++ binary_to_list(TagId),
     case prim_file:read_file(TagPath) of
         {ok, Binary} ->
             gen_server:reply(From, {ok, Binary});
         {error, Reason} ->
-            error_logger:warning_msg("Read failed at ~p: ~p", [TagPath, Reason]),
+            error_logger:warning_msg("Read failed on ~p at ~p: ~p",
+                                     [node(), TagPath, Reason]),
             gen_server:reply(From, {error, read_failed})
     end.
 
@@ -280,7 +287,7 @@ do_put_tag_data(Tag, Data, #state{nodename = NodeName,
     case ddfs_util:ensure_dir(Local) of
         ok ->
             Partial = lists:flatten(["!partial.", binary_to_list(Tag)]),
-            Filename = filename:join(Local, Partial),
+            Filename = Local ++ "/" ++ Partial,
             case prim_file:write_file(Filename, Data) of
                 ok ->
                     {ok, VolName};
@@ -305,8 +312,8 @@ do_put_tag_commit(Tag, TagVol, #state{nodename = NodeName,
     {TagName, Time} = ddfs_util:unpack_objname(Tag),
 
     TagL = binary_to_list(Tag),
-    Src = filename:join(Local, lists:flatten(["!partial.", TagL])),
-    Dst = filename:join(Local,  TagL),
+    Src = Local ++ "/" ++ lists:flatten(["!partial.", TagL]),
+    Dst = Local ++ "/" ++ TagL,
     case ddfs_util:safe_rename(Src, Dst) of
         ok ->
             {{ok, Url},
@@ -332,6 +339,8 @@ try_makedir(Dir) ->
 
 -spec init_vols(path(), [volume_name()]) -> {ok, [volume()]}.
 init_vols(Root, VolNames) ->
+    error_logger:info_msg("~p initialized on ~p with volumes: ~p",
+			  [?MODULE, node(), VolNames]),
     _ = [begin
              ok = try_makedir(filename:join([Root, VolName, "blob"])),
              ok = try_makedir(filename:join([Root, VolName, "tag"]))
@@ -359,17 +368,17 @@ find_vols(Root) ->
             Error
     end.
 
--spec find_tags(path(), [volume()]) -> {ok, gb_tree()}.
+-spec find_tags(path(), [volume()]) -> {ok, tag_map()}.
 find_tags(Root, Vols) ->
     {ok,
      lists:foldl(fun({_Space, VolName}, Tags) ->
                          ddfs_util:fold_files(filename:join([Root, VolName, "tag"]),
-                                              fun(Tag, _, Tags1) ->
+                                              fun(Tag, _, _, Tags1) ->
                                                       parse_tag(Tag, VolName, Tags1)
                                               end, Tags)
                  end, gb_trees:empty(), Vols)}.
 
--spec parse_tag(nonempty_string(), volume_name(), gb_tree()) -> gb_tree().
+-spec parse_tag(nonempty_string(), volume_name(), tag_map()) -> tag_map().
 parse_tag("!" ++ _, _, Tags) -> Tags;
 parse_tag(Tag, VolName, Tags) ->
     {TagName, Time} = ddfs_util:unpack_objname(Tag),

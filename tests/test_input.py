@@ -1,7 +1,7 @@
 from disco.job import JobChain
 from disco.error import JobError
 from disco.test import TestCase, TestJob
-from disco.worker.classic import func
+from disco.worker import task_io
 
 class MapJob(TestJob):
     partitions = 3
@@ -17,14 +17,14 @@ class ReduceJob(TestJob):
             yield item, 'mmm'
 
 class MergeReduceJob(ReduceJob):
-    merge_partitions = True
+    pass
 
 class MapReduceJob(MapJob, ReduceJob):
     pass
 
 class InputTestCase(TestCase):
     def serve(self, path):
-        return 'smoothies'
+        return b'smoothies'
 
     def test_empty_map(self):
         self.job = MapJob().run(input=[])
@@ -50,20 +50,21 @@ class InputTestCase(TestCase):
         self.job = ReduceJob().run(input=self.test_server.urls(['test']),
                                    partitions=None,
                                    reduce_reader=None)
-        self.assertResults(self.job, [('smoothies', 'mmm')])
+        self.assertResults(self.job, [(b'smoothies', 'mmm')])
 
     def test_partitioned_mapreduce(self):
         self.job = MapReduceJob().run(input=self.test_server.urls(['test']),
                                       partitions=8,
-                                      reduce_reader=func.chain_reader)
-        self.assertResults(self.job, [(('smoothies', 'against_me'), 'mmm')])
+                                      reduce_reader=task_io.chain_reader)
+        self.assertResults(self.job, [((b'smoothies', 'against_me'), 'mmm')])
 
     def test_partitioned_reduce(self):
         beers = ['sam_adams', 'trader_jose', 'boont_esb']
-        input = ['raw://%s' % beer for beer in beers]
+        input = ['raw://{0}'.format(beer) for beer in beers]
         a, b, c, d = MapJob(), MapJob(), ReduceJob(), MergeReduceJob()
         self.job = JobChain({a: input,
                              b: input,
                              c: [a, b],
-                             d: [a, b]}).wait()
+                             d: [a, b]})
+        self.job.wait()
         self.assertAllEqual(sorted(self.results(c)), sorted(self.results(d)))

@@ -15,6 +15,7 @@ a {
 
 input {
     border: 1px solid #aaa;
+    border-radius: 5px;
 }
 
 #ft {
@@ -61,11 +62,11 @@ input {
 /* Nodes */
 
 .nodebox {
-    width: 15em;
-    height: 6em;
+    width: 140px;
     border: 1px solid #666;
     float: left;
     margin: 10px;
+    border-radius: 5px;
 }
 
 .blacklisted {
@@ -78,6 +79,7 @@ input {
     padding-left: 5px;
     font-weight: bold;
     border-bottom: 1px solid black;
+    border-radius: 4px;
 }
 
 .nodebox .disconnected {
@@ -85,16 +87,18 @@ input {
 }
 
 .nodebox .status {
-    height: 1em;
     border-bottom: 1px solid #000;
+    line-height: 0px;
 }
 
 .nodebox .status .jbox {
-    height: 1em;
-    width: 1em;
+    height: 10px;
+    width: 10px;
     background: #B280FF;
-    border-right: 1px solid #000;
-    float: left;
+    border: 1px solid #000;
+    display: inline-block;
+    margin: 1px;
+    border-radius: 3px;
 }
 
 .nodebox .status .busy {
@@ -147,6 +151,7 @@ input {
     text-align: center;
     margin-right: 10px;
     padding-bottom: 10px;
+    border-radius: 5px;
 }
 
 #joblist input {
@@ -173,6 +178,7 @@ input {
     border: 1px solid #000;
     margin-right: 5px;
     float: left;
+    border-radius: 5px;
 }
 
 #joblist .job .active {
@@ -191,11 +197,12 @@ input {
 /* Job Detail */
 
 .job .infobox {
-    width: 20em;
-    height: 14em;
+    width: 25em;
+    height: 22em;
     border: 1px solid #666;
     float: left;
     margin: 10px;
+    border-radius: 5px;
 }
 
 .job .infobox > .title {
@@ -206,7 +213,7 @@ input {
 
 .job .infobox > .body {
     padding: 5px;
-    height: 11.3em;
+    height: 18em;
     overflow: auto;
 }
 
@@ -221,6 +228,7 @@ input {
 .job .infobox table {
     width: 100%;
     background: #eee;
+    border-radius: 5px;
 }
 
 .job .infobox .redundant {
@@ -304,6 +312,10 @@ input {
     min-height: 10em;
 }
 
+.editable {
+    min-width: 100px;
+}
+
 .config_table td {
     padding-left: 5px;
     padding-right: 5px;
@@ -344,6 +356,7 @@ h3 {
 
 table td input {
     background: #eee;
+    border-radius: 5px;
 }
 
 #gcinfo {

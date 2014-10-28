@@ -107,19 +107,18 @@ op('GET', "/ddfs/new_blob/" ++ BlobName, Req) ->
             false -> BlobK;
             {_, X} -> list_to_integer(X)
     end,
-    Exc = parse_exclude(lists:keysearch("exclude", 1, QS)),
-    case ddfs:new_blob(ddfs_master, BlobName, K, Exc) of
-        {ok, Urls} when length(Urls) < K ->
-            Req:respond({403, [], ["Not enough nodes for replicas."]});
-        too_many_replicas ->
-            Req:respond({403, [], ["Not enough nodes for replicas."]});
-        invalid_name ->
-            Req:respond({403, [], ["Invalid prefix."]});
-        {ok, Urls} ->
-            okjson([list_to_binary(U) || U <- Urls], Req);
-        E ->
-            lager:warning("/ddfs/new_blob failed: ~p", [E]),
-            on_error(E, Req)
+    Exc = parse_inclusion(lists:keysearch("exclude", 1, QS)),
+    Include = lists:keysearch("include", 1, QS),
+    Inc = parse_inclusion(Include),
+    case {Include, Inc} of
+        {false, [_H|_T]} ->
+            Req:respond({403, [], ["This must not happen."]});
+        {false, _} ->
+            new_blob(Req, BlobName, K, Inc, Exc);
+        {_, [false]} ->
+            Req:respond({403, [], ["Requested Replica not found."]});
+        {_, [_H|_T]} ->
+            new_blob(Req, BlobName, K, Inc, Exc)
     end;
 
 op('GET', "/ddfs/tags" ++ Prefix0, Req) ->
@@ -137,7 +136,7 @@ op('GET', "/ddfs/tag/" ++ TagAttrib, Req) ->
     case Attrib of
         unknown_attribute ->
             Req:respond({404, [], ["Tag attribute not found."]});
-        {user, AttribName} when size(AttribName) > ?MAX_TAG_ATTRIB_NAME_SIZE ->
+        {user, AttribName} when byte_size(AttribName) > ?MAX_TAG_ATTRIB_NAME_SIZE ->
             Req:respond({403, [], ["Attribute name too big."]});
         _ ->
             case ddfs:get_tag(ddfs_master, Tag, Attrib, Token) of
@@ -175,7 +174,7 @@ op('PUT', "/ddfs/tag/" ++ TagAttrib, Req) ->
     case Attrib of
         unknown_attribute ->
             Req:respond({404, [], ["Tag attribute not found."]});
-        {user, AttribName} when size(AttribName) > ?MAX_TAG_ATTRIB_NAME_SIZE ->
+        {user, AttribName} when byte_size(AttribName) > ?MAX_TAG_ATTRIB_NAME_SIZE ->
             Req:respond({403, [], ["Attribute name too big."]});
         _ ->
             Op = fun(Value, Size) ->
@@ -291,7 +290,7 @@ process_payload(Fun, Req) ->
              invalid ->
                  Req:respond({403, [], ["Invalid request body."]});
              Value ->
-                 case Fun(Value, size(BinaryPayload)) of
+                 case Fun(Value, byte_size(BinaryPayload)) of
                      {ok, Dst} -> okjson(Dst, Req);
                      E -> on_error(E, Req)
                  end
@@ -299,7 +298,24 @@ process_payload(Fun, Req) ->
     catch _:_ -> Req:respond({403, [], ["Invalid request."]})
     end.
 
--spec parse_exclude('false' | {'value', {_, string()}}) -> [node()].
-parse_exclude(false) -> [];
-parse_exclude({value, {_, ExcStr}}) ->
-    [disco:slave_safe(Host) || Host <- string:tokens(ExcStr, ",")].
+-spec parse_inclusion('false' | {'value', {_, string()}}) -> [node()].
+parse_inclusion(false) -> [];
+parse_inclusion({value, {_, Str}}) ->
+    [disco:slave_safe(Host) || Host <- string:tokens(Str, ",")].
+
+-spec new_blob(module(), string()|object_name(), non_neg_integer(), [node()], [node()]) ->
+                      too_many_replicas | {ok, [nonempty_string()]}.
+new_blob(Req, BlobName, K, Inc, Exc) ->
+    case ddfs:new_blob(ddfs_master, BlobName, K, Inc, Exc) of
+        {ok, Urls} when length(Urls) < K ->
+            Req:respond({403, [], ["Not enough nodes for replicas."]});
+        too_many_replicas ->
+            Req:respond({403, [], ["Not enough nodes for replicas."]});
+        invalid_name ->
+            Req:respond({403, [], ["Invalid prefix."]});
+        {ok, Urls} ->
+            okjson([list_to_binary(U) || U <- Urls], Req);
+        E ->
+            lager:warning("/ddfs/new_blob failed: ~p", [E]),
+            on_error(E, Req)
+    end.

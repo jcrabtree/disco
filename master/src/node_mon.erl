@@ -82,13 +82,24 @@ wait(Host, Node) ->
             lager:info("Unexpected message to node_mon for ~p: ~p", [Node, E])
     end.
 
+add_options_if_available([], Acc) -> Acc;
+add_options_if_available([OptionName|Rest], Acc) ->
+    Acc1 = case os:getenv(OptionName) of
+        false ->
+            Acc;
+        OptionValue ->
+            Acc ++ io_lib:format(" ~s ~s ", [OptionName, OptionValue])
+    end,
+    add_options_if_available(Rest, Acc1).
+
 slave_env() ->
     Home = disco:get_setting("DISCO_MASTER_HOME"),
-    lists:flatten([?SLAVE_ARGS,
+    SchedulerOptions = add_options_if_available(["+scl"], []),
+    lists:flatten([?SLAVE_ARGS, SchedulerOptions,
                    [io_lib:format(" -pa ~s/ebin/~s", [Home, Dir])
                     || Dir <- [""]],
                    [io_lib:format(" -pa ~s/deps/~s/ebin", [Home, Dir])
-                    || Dir <- ["mochiweb", "lager"]],
+                    || Dir <- ["mochiweb", "lager", "plists"] ++ disco_profile:get_app_names()],
                    [io_lib:format(" -env ~s '~s'", [S, disco:get_setting(S)])
                     || S <- disco:settings()]]).
 
@@ -123,11 +134,12 @@ is_master(Host) ->
 -spec start_temp_gc(host(), node(), path()) -> pid().
 start_temp_gc(Host, Node, DiscoRoot) ->
     DataRoot = filename:join(DiscoRoot, Host),
-    spawn_link(Node, temp_gc, start_link, [node(), DataRoot]).
+    Master = node(),
+    spawn_link(Node, temp_gc, start_link, [Master, DataRoot]).
 
 -spec start_lock_server(node()) -> pid().
 start_lock_server(Node) ->
-    spawn_link(Node, fun lock_server:start_link/0).
+    spawn_link(Node, lock_server, start_link, []).
 
 -spec start_ddfs_node(host(), node(), path(), node_ports(),
                       {boolean(), boolean()}) -> pid().
@@ -139,4 +151,5 @@ start_ddfs_node(Host, Node, DiscoRoot,
             {disco_root, DiscoRoot}, {ddfs_root, DdfsRoot},
             {get_port, GetPort}, {put_port, PutPort},
             {get_enabled, GetEnabled}, {put_enabled, PutEnabled}],
-    spawn_link(Node, ddfs_node, start_link, [Args, self()]).
+    NodeMon = self(),
+    spawn_link(Node, ddfs_node, start_link, [Args, NodeMon]).

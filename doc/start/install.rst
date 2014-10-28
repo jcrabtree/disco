@@ -35,14 +35,20 @@ On each server the following are required:
 
  * `SSH daemon and client <http://www.openssh.com>`_
  * `Erlang/OTP R14A or newer <http://www.erlang.org>`_
- * `Python 2.6 or newer <http://www.python.org>`_
+ * `Python 2.6.6 or newer, or Python 3.2 or newer <http://www.python.org>`_
 
-The same version of Erlang should be installed on all servers.
+The same version of Erlang and Python should be installed on all
+servers.  The default version of Python on the clients from which
+Disco jobs are submitted should also match that on the servers.
 
 Optionally, ``DISCO_PROXY`` needs one of
 
  * `Lighttpd 1.4.17 or newer <http://lighttpd.net>`_
  * `Varnish 2.1.3 or newer <http://varnish-cache.org>`_
+
+Due to issues with unicode in Python2's httplib library, we recommend
+installing the pycurl package.  Disco will transparently use pycurl
+when available.
 
 .. _install_source:
 
@@ -54,9 +60,10 @@ Short Version
 
 ::
 
-        git clone git://github.com/discoproject/disco.git DISCO_HOME
-        cd DISCO_HOME
+        git clone git://github.com/discoproject/disco.git $DISCO_HOME
+        cd $DISCO_HOME
         make
+        cd lib && python setup.py install --user && cd ..
         bin/disco nodaemon
 
 .. hint:: Its convenient to add the :mod:`disco <discocli>` command to your path.
@@ -75,7 +82,18 @@ Now compile Disco::
 
 This is often the easiest and the least intrusive way to get started with Disco.
 
-You should repeat the above command on all machines in your Disco cluster.
+You should repeat the above command on all machines in your Disco cluster.  You
+can also install disco systemwide::
+
+        make install
+
+Install the python libraries for the local user::
+
+        cd lib
+        python setup.py install --user
+        cd ..
+
+Or you can install these libraries in your favorite place.
 
 .. note:: Disco must be located at the same path on all the nodes.
 

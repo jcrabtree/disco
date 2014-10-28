@@ -7,8 +7,29 @@ set -e
 
 case "\$1" in
     configure)
-        adduser --system --quiet --group disco --disabled-password --shell /bin/bash --home ${RELSRV} --no-create-home
+        if ! getent group | grep -q "^disco:" ; then
+            addgroup --system \
+                     --quiet \
+                     disco 2>/dev/null
+        fi
+        if ! getent passwd | grep -q "^disco:" ; then
+            adduser --system \
+                    --quiet \
+                    --group \
+                    --disabled-password \
+                    --shell /bin/bash \
+                    --home ${RELSRV} \
+                    --no-create-home \
+                    disco 2>/dev/null
+        fi
+        usermod -c "Disco" -d ${RELSRV} -g disco disco
         chown disco:disco ${RELSRV}
+        su disco --command="""
+            ssh-keygen -N '' -f ${RELSRV}/.ssh/id_dsa
+            cat ${RELSRV}/.ssh/id_dsa.pub >> ${RELSRV}/.ssh/authorized_keys
+            echo -n \"localhost \" > ${RELSRV}/.ssh/known_hosts
+            cat /etc/ssh/ssh_host_rsa_key.pub >> ${RELSRV}/.ssh/known_hosts
+        """
     ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)

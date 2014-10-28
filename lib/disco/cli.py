@@ -9,8 +9,8 @@ def check_reify(option, opt, val):
     from disco.util import reify
     try:
         return reify(val)
-    except Exception, e:
-        raise OptionValueError('%s option: %s' % (opt, str(e)))
+    except Exception as e:
+        raise OptionValueError('{0} option: {1}'.format(opt, str(e)))
 
 class Option(Opt):
     actions = ('setitem', 'setitem2')
@@ -37,6 +37,8 @@ class OptionParser(clx.OptionParser):
         clx.OptionParser.__init__(self, option_class=Option, **kwargs)
         self.add_option('-t', '--token',
                         help='authorization token to use for tags')
+        self.add_option('-M', '--master',
+                        help='set master of ddfs')
 
 class Program(clx.Program):
     def __init__(self, *args, **kwargs):
@@ -46,12 +48,19 @@ class Program(clx.Program):
             self.settings['DDFS_READ_TOKEN']  = token
             self.settings['DDFS_WRITE_TOKEN'] = token
 
+        master = self.options.master
+        if master is not None:
+            if master.find(':') == -1:
+                port = self.settings['DISCO_PORT']
+                master += ':' + str(port)
+            self.settings['DISCO_MASTER'] = master
+
     @classmethod
     def add_classic_reads(cls, command):
         command.add_option('-R', '--reader',
                            help='input reader to import and use')
         command.add_option('-T', '--stream',
-                           default='disco.func.default_stream',
+                           default='disco.worker.task_io.default_stream',
                            help='input stream to import and use')
         return command
 
@@ -119,8 +128,8 @@ class Program(clx.Program):
 
     def default(self, program, *args):
         if args:
-            raise Exception("unrecognized command: %s" % ' '.join(args))
-        print self.disco
+            raise Exception("unrecognized command: {0}".format(' '.join(args)))
+        print(self.disco)
 
     def job_history(self, jobname):
         if jobname == '@':
@@ -180,6 +189,13 @@ class Program(clx.Program):
     def tests_path(self):
         return os.path.join(self.settings['DISCO_HOME'], 'tests')
 
+def isErlOptionAvailable(option, value):
+    if os.system("erl " + option  + " " + value +
+            " -noshell -s erlang halt 2>/dev/null") == 0:
+        return True
+    else:
+        return False
+
 class Master(clx.server.Server):
     def __init__(self, settings):
         super(Master, self).__init__(settings, settings['DISCO_ROTATE_LOG'])
@@ -197,22 +213,41 @@ class Master(clx.server.Server):
         edep = lambda d: os.path.join(settings['DISCO_MASTER_HOME'], 'deps', d, 'ebin')
         def lager_config(log_dir):
             return ['-lager', 'handlers',
-                    '[{lager_console_backend, info},'
-                     '{lager_file_backend,'
-                      '[{"%s/error.log", error, 1048576000, "$D0", 5},'
-                       '{"%s/console.log", debug, 104857600, "$D0", 5}]}]' % (log_dir, log_dir),
-                    '-lager', 'crash_log', '"%s/crash.log"' % (log_dir)]
-        return settings['DISCO_ERLANG'].split() + \
-               lager_config(settings['DISCO_LOG_DIR']) + \
-               ['+K', 'true',
-                '+P', '10000000',
-                '-rsh', 'ssh',
-                '-connect_all', 'false',
-                '-sname', self.name,
-                '-pa', epath('ebin'),
-                '-pa', edep('mochiweb'),
-                '-pa', edep('lager'),
-                '-eval', 'application:start(disco)']
+                    ('[{lager_console_backend, info},'
+                     +'{lager_file_backend,'
+                     +'[{file,' + '"{0}/error.log"'.format(log_dir)   + '}, {level, error}, {size, 1048576000}, {date, "$D0"}, {count, 5}]},'
+                     +'{lager_file_backend,'
+                     +'[{file,' + '"{0}/console.log"'.format(log_dir) + '}, {level, debug}, {size, 1048576000}, {date, "$D0"}, {count, 5}]}]'),
+                    '-lager', 'error_logger_hwm', '200',
+                    '-lager', 'crash_log', '"{0}/crash.log"'.format(log_dir)]
+
+        SchedulerOptions = ['+K', 'true',
+                '+P', '10000000']
+
+        if settings["SYSTEMD_ENABLED"]:
+            SchedulerOptions.append("-noshell")
+
+        for option, value in [('+scl', 'false'), ('+stbt', 's')]:
+            if isErlOptionAvailable(option, value):
+                SchedulerOptions += [option, value] + ["-env", option, value]
+
+        ret = (settings['DISCO_ERLANG'].split() +
+                lager_config(settings['DISCO_LOG_DIR']) +
+                SchedulerOptions +
+                 ['-rsh', 'ssh',
+                 '-connect_all', 'false',
+                 '-sname', self.name,
+                 '-pa', epath('ebin'),
+                 '-pa', edep('mochiweb'),
+                 '-pa', edep('goldrush'),
+                 '-pa', edep('lager'),
+                 '-pa', edep('meck'),
+                 '-pa', edep('bear'),
+                 '-pa', edep('folsom'),
+                 '-pa', edep('folsomite'),
+                 '-pa', edep('plists'),
+                 '-eval', 'application:start(disco)'])
+        return ret
 
     @property
     def host(self):
@@ -241,11 +276,11 @@ class Master(clx.server.Server):
 
     @property
     def name(self):
-        return '%s_master' % self.settings['DISCO_NAME']
+        return '{0}_master'.format(self.settings['DISCO_NAME'])
 
     @property
     def nodename(self):
-        return '%s@%s' % (self.name, self.host.split('.', 1)[0])
+        return '{0}@{1}'.format(self.name, self.host.split('.', 1)[0])
 
     def nodaemon(self):
         return ('' for x in self.start(*self.basic_args))
@@ -261,5 +296,5 @@ class Master(clx.server.Server):
                 os.setgid(gid)
                 os.setuid(uid)
                 os.environ['HOME'] = home
-            except Exception, x:
-                raise Exception("Could not switch to the user '%s'" % user)
+            except Exception as x:
+                raise Exception("Could not switch to the user '{0}'".format(user))

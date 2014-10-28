@@ -9,6 +9,9 @@
 *.pyc
 *.dialyzer_plt
 *.eunit
+*.ropeproject
+*~
+*.swp
 master/deps
 master/ebin
 doc/.build/

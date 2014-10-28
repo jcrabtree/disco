@@ -1,6 +1,333 @@
+.. _releases:
 
 Release notes
 =============
+
+Disco 0.5.4 (October 27, 2014)
+-----------------
+New features
+''''''''''''
+- A lot of new examples including ipython, page rank, and travelling salesman problem.
+- Add a deployment script to get a cluster ready in Google Cloud in a couple of minutes.
+- Fixes to let Disco run on OSX Yosemite.
+- And a lot of bug fixes and performance improvements
+
+Disco 0.5.3 (August 5, 2014)
+-----------------
+New features
+''''''''''''
+- There is now one event handler process for the events of each job. This
+  resolves one of the bottlenecks in the disco master.
+
+- plists is added as a new disco dependency for simple parallel list operations.
+  The only use of this dependency at the moment is traversing the ddfs volumes
+  in parallel in the build_map phase of GC.
+
+- Job coordinator minimizes the amount of per-task work to avoid
+  becoming a bottleneck for jobs with large number of tasks.
+
+Disco 0.5.2 (June 24, 2014)
+-----------------
+New features
+''''''''''''
+- Ddfs can now distribute the blobs according to the amount of space available on the nodes.
+
+- Disco now supports concurrent stages.  That means, a stage can start before
+  all of the tasks of the previous stages have finished.  This option can be
+  enabled for pipeline jobs.
+
+- A Disco worker is available in `golang <http://github.com/discoproject/goworker>`.
+  This worker only supports map-reduce jobs at the moment.
+
+- The scheduler dictionary can now be sent as part of the job_dict in both the
+  classic and the pipeline workers. The max_core option in this dictionary will
+  limit the number of tasks from a job that can run.
+
+- By default, Disco is now installed in /usr instead of /usr/local.
+
+Deprecated
+''''''''''
+- The deprecated merge_partitions option has been removed.
+
+Disco 0.5.1 (April 16, 2014)
+----------------------------
+New features
+''''''''''''
+- Disco now uses folsom for monitoring purposes.  Folsom extracts some
+  information from Disco and sends it to a graphite server. The folsom
+  (and related) applications will start only if DISCO_PROFILE is set. This is
+  not set by default.
+  By default, folsom assumes that the localhost is the graphite server.  This
+  can be overriden by using the GRAPHITE_HOST option.
+
+- A docker file has been added that lets you install Disco in a Docker
+  container.
+
+- A spec file has been added to make it easy to create an rpm from the a Disco
+  tarball.
+
+- Disco now works with Erlang 17.
+
+Experimental
+''''''''''''
+- Disco now supports reading the job inputs from and writing the job outputs to HDFS.
+
+- Disco now supports reading the job inputs from and writing the job outputs to Redis.
+
+Changes
+'''''''
+
+- The changes in the mochiweb fork of the Disco project has been merged into
+  upstream and Disco is now using the upstream.
+
+- New options are now passed to the erlang process on the master node that will
+  disable scheduler compaction and spreads the schedulers as much as possible.
+
+- Two options have been added to the ``ddfs chunk`` command to override the chunk
+  size and the maximum record size.
+
+- The save_info field has been added to the :ref:`jobpack <jobpack>`. For now, this
+  field only contains the information needed for saving the outputs of the job
+  into HDFS.
+
+- A couple of examples have been added.  Namely, the naive-bayes and an example
+  for reading huge xml files.  Moreover, the kclustering example has been
+  re-implemented using the Disco pipelines.
+
+Disco 0.5 (February 14, 2014)
+-----------------------------
+This release is dedicated to the memory of Priya Hattiangdi, Prashanth Mundkur's wife, who has passed away a few days ago. May she rest in peace.
+
+New features
+''''''''''''
+- A new :ref:`pipeline <pipeline>` model for Disco job computation.
+  This model is a conservative extension of the previous pure
+  map-reduce model, and provides better support for certain kinds of
+  processing that were previously implemented using chains of
+  map-reduce jobs.  This model also allows us to address various
+  implementation issues and bugs in the previous map-reduce model.
+
+  However, there is almost complete backward-compatible support for
+  the previous map-reduce model, with little or no change required to
+  existing Disco jobs; but see below for restrictions.
+
+Changes
+'''''''
+The new pipeline model comes with several changes.
+
+- The current :ref:`jobpack <jobpack>` format has changed slightly,
+  reflected by an incremented version in the version field.  The main
+  changes are in the fields of the ``jobdict``.  Jobpacks in the
+  previous format are still supported; however, this support may be
+  eventually removed in a future release.
+
+- The :ref:`Disco worker protocol <worker_protocol>` has also changed
+  to support the pipeline model, which is again reflected by an
+  incremented version field in the :ref:`WORKER` message.  In
+  particular, there are changes to the :ref:`TASK`, :ref:`INPUT` and
+  :ref:`OUTPUT` protocol messages.  There is no support for the
+  previous version of the protocol, hence implementations of the Disco
+  worker protocol will need to be updated to the current protocol
+  version to work with this release.  The standard Python and OCaml
+  implementations support the new protocol.
+
+- The shuffle stage of the default map-reduce pipeline is now done as
+  an explicit pipeline stage.  When done after map, this results in a
+  ``map_shuffle`` stage, whereas after reduce this becomes a
+  ``reduce_shuffle`` stage.
+
+  In previous versions of Disco, these shuffles were performed in
+  implicit stages within the Disco master itself, and actually
+  implemented in Erlang.  The shuffles now need to be performed in the
+  Disco worker library code, and are implemented in both the Python
+  and OCaml worker libraries.
+
+- A ``save_results`` field in the ``jobdict`` of the jobpack is now
+  interpreted by the Disco master.  Setting this to ``true`` tells the
+  Disco master to save the job results into a DDFS tag.
+
+  Previously, this functionality was implemented in the Disco worker
+  library, and required the library to implement DDFS client
+  interface.  Moving this to the master makes it easier to have this
+  functionality in new language implementations of the Disco worker
+  protocol and library.  For example, this is used in the OCaml Disco
+  library.
+
+- The web UI for jobs has changed slightly in order to show the stages
+  of a job pipeline.
+
+- Disco now uses lager 2.0 which can be integrated with syslog.
+
+- Disco now works on FreeBSD 10.0.
+
+- A continuous integration has been set up to compile the Erlang code,
+  and make sure it passes the dialyzer and all of the unittests.
+
+Backwards incompatible changes
+''''''''''''''''''''''''''''''
+- See above discussion of the Disco worker protocol.
+
+- Support for scheduler parameters in jobs (e.g. ``max_cores``,
+  ``force_local``, and ``force_remote``) has been removed.  If present
+  in a jobpack, they will be ignored.
+
+- Support for the use of ``partitions`` in a Disco job is now limited.
+  Previously, this was typically used to set the number of reduce
+  tasks: when set to a number N, it was guaranteed that the job would
+  have N reduce tasks.
+
+  In this release, the number of reduce tasks is determined
+  dynamically, using the user-generated labels attached to task
+  outputs.  Hence, it is possible for a job with ``partitions`` set to
+  N to have less than N reduce tasks (if, for e.g. there were fewer
+  than N task output labels generated by the maps).  Since output
+  labels in the default map-reduce pipeline are generated by the
+  partition function, whether this discrepancy occurs depends on the
+  partition function and the distribution of the inputs to it.
+
+- Chaining the non-DDFS results of a job executed in a previous
+  version (pre-0.5) of Disco into a job executed with this version
+  (0.5) of Disco is not supported.
+
+Bugfixes
+''''''''
+Please see the version control for the list of bug fixes.
+
+Disco 0.4.5 (Mar 28, 2013)
+--------------------------
+
+Changes
+'''''''
+
+- Disco documentation is now also at `ReadTheDocs
+  <http://disco.readthedocs.org>`_, along with documentation for
+  `DiscoDB <http://discodb.readthedocs.org>`_.
+
+- Mochiweb has been updated to fix compilation issues with Erlang 16B,
+  which removed support for parameterized modules.
+
+- Disco debian packages are no longer hosted on discoproject.org.
+  Instead, Debian/Ubuntu users are encouraged to build their own
+  packages for their particular Erlang/Python environment using the
+  ``make-discoproject-debian`` script in the source tree.  Please read
+  the comments in the script.
+
+Bugfixes
+''''''''
+
+- Fix ``ddfs xcat`` display output, thanks to John Emhoff.
+
+- Fix ``disco jobdict`` command (#341).
+
+- Clarify the documentation in several places, thanks to feedback from
+  Pavel Hančar, and fixes from John Emhoff.
+
+- Fix a formatting bug in ``disco.util:urljoin``.
+
+- Fixed job deletion from UI when job has quotes in name, thanks to
+  @nvdev on Github.
+
+- Ensure that *known* garbage in DDFS is deleted immediately, without
+  waiting for the safety timeout required for blobs and tags of
+  indeterminate status.
+
+Disco 0.4.4 (Dec 5, 2012)
+-------------------------
+
+New features
+''''''''''''
+
+- The Python client library should now be Python3 compatible (version
+  3.2 or higher).  As usual, the Python versions on the client and in
+  the Disco cluster should match; mixed configurations are not
+  supported.  Since Python3 differentiates between string and unicode
+  objects, Disco jobs will need to do the same.  In particular, the
+  default *map_reader* will provide ``bytes`` objects to the ``map``
+  function.
+
+- Client and master version commands have been added to the
+  :mod:`disco <discocli>` command-line interface (issue #283).
+  Currently, the client version command only works for Disco installed
+  as a python egg.
+
+- Installation support for NetBSD, thanks to Yamamoto Takashi.
+
+- There is now a script to ease the creation of Disco debian packages,
+  used to create the Debian packages provided from `discoproject.org
+  <http://discoproject.org/doc/disco/start/download.html>`_.  Note
+  that this script does *not* follow Debian packaging guidelines; use
+  at your own risk!
+
+- Small efficiency and logging improvements to DDFS.
+
+Changes
+'''''''
+
+- The ``disco`` and ``ddfs`` command-line scripts are now packaged as
+  part of python-disco Debian package, so that they can be used on
+  clients.  Thanks to Daniel Graña.
+
+Bugfixes
+''''''''
+
+- :func:`disco.ddfs.DDFS.pull` should now obey DISCO_PROXY settings.
+  Thanks to Daniel Graña.
+
+- Intercept Python warning messages to sys.stderr, which break the
+  Disco worker protocol.  They are now logged as messages.  Thanks to
+  Daniel Graña.
+
+- The HTTP header handling in the Disco client library is more
+  case-resilient.
+
+
+Disco 0.4.3 (Aug 22, 2012)
+--------------------------
+
+New features
+''''''''''''
+
+- An extended Disco tutorial, thanks to Davin Potts.
+
+- More documentation on using the proxy mode, and recovering from a
+  master failure.
+
+- More efficient (faster and using less memory) event_server, which
+  should speed up UI responses for large jobs.
+
+- Better fault-tolerance in re-replication, which should speed up
+  node-removal.  Node-removal of more than one node is now better
+  tested and supported.
+
+- Less unnecessary creation of garbage tags in DDFS, by avoiding
+  creating new tag incarnations when their content has not changed.
+  Since less garbage is created, GC will now complete more quickly.
+
+- A "local-cluster" mode for DDFS, that simulates a multi-node DDFS
+  cluster on a single machine.  This is purely a developer feature for
+  the purpose of improving DDFS testing, and cannot be used for
+  running Disco jobs using DDFS.  Thanks to Harry Nakos.
+
+Changes
+'''''''
+
+- Change the default partition function to use the key hash directly,
+  instead of the string version of the key; this should address some
+  unicode failures (#265).  Thanks to quasiben and tmielika.
+
+- Improved logging, especially to track re-replication progress.
+
+- Major cleanup of Erlang codebase.
+
+Bugfixes
+''''''''
+
+- More fixes to DISCO_PROXY mode (#269).  This mode is required for
+  using DDFS in the "local cluster" mode.
+
+- Fix a race when the UI tried to access information for a job that
+  had been submitted but not yet unpacked (#304).
+
 
 Disco 0.4.2 (Apr 26, 2012)
 --------------------------

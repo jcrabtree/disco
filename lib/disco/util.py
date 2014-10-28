@@ -4,18 +4,13 @@
 
 This module provides utility functions that are mostly used by Disco
 internally.
-
-.. deprecated:: 0.4
-                :func:`disco.util.data_err`, :func:`disco.util.err`, and :func:`disco.util.msg`
-                will be removed completely in the next release,
-                in favor of using normal Python **raise** and **print** statements.
 """
 import os, sys, time
 import functools, gzip
 
-from cStringIO import StringIO
+from disco.compat import BytesIO, basestring, bytes_to_str, str_to_bytes
+from disco.compat import pickle_loads, pickle_dumps, sort_cmd
 from itertools import chain, groupby, repeat
-from urllib import urlencode
 
 from disco.error import DiscoError, DataError, CommError
 from disco.settings import DiscoSettings
@@ -36,24 +31,25 @@ class netloc(tuple):
     def port(self):
         return self[1]
 
-    def __nonzero__((host, port)):
-        return bool(host)
+    def __nonzero__(host_port):
+        return bool(host_port[0])
 
-    def __str__((host, port)):
-        return '%s:%s' % (host, port) if port else host
+    def __str__(host_port):
+        host, port = host_port
+        return '{0}:{1}'.format(host, port) if port else host
 
 def chainify(iterable):
     return list(chain(*iterable))
 
 def dsorted(iterable, buffer_size=1e6, tempdir='.'):
-    from cPickle import dump, load
+    from disco.compat import pickle_load, pickle_dump
     from heapq import merge
     from itertools import islice
     from tempfile import TemporaryFile
     def read(handle):
         while True:
             try:
-                yield load(handle)
+                yield pickle_load(handle)
             except EOFError:
                 return
     iterator = iter(iterable)
@@ -62,7 +58,7 @@ def dsorted(iterable, buffer_size=1e6, tempdir='.'):
         buffer = sorted(islice(iterator, buffer_size))
         handle = TemporaryFile(dir=tempdir)
         for item in buffer:
-            dump(item, handle, -1)
+            pickle_dump(item, handle, -1)
         handle.seek(0)
         subiters.append(read(handle))
         if len(buffer) < buffer_size:
@@ -85,7 +81,7 @@ def identity(object):
     return object
 
 def isiterable(object):
-    return hasattr(object, '__iter__')
+    return hasattr(object, '__iter__') and not isinstance(object, str)
 
 def iskv(object):
     return isinstance(object, tuple) and len(object) is 2
@@ -98,8 +94,8 @@ def iterify(object):
 def ilen(iter):
     return sum(1 for _ in iter)
 
-def key((k, v)):
-    return k
+def key(k_v):
+    return k_v[0]
 
 def kvgroup(kviter):
     """
@@ -137,25 +133,26 @@ def shuffled(object):
     return shuffled
 
 def argcount(object):
-    if hasattr(object, 'func_code'):
-        return object.func_code.co_argcount
-    argcount = object.func.func_code.co_argcount
+    if hasattr(object, '__code__'):
+        return object.__code__.co_argcount
+    argcount = object.func.__code__.co_argcount
     return argcount - len(object.args or ()) - len(object.keywords or ())
 
 def globalize(object, globals):
     if isinstance(object, functools.partial):
         object = object.func
-    if hasattr(object, 'func_globals'):
-        for k, v in globals.iteritems():
-            object.func_globals.setdefault(k, v)
+    if hasattr(object, '__globals__'):
+        for k, v in globals.items():
+            object.__globals__.setdefault(k, v)
 
-def urljoin((scheme, netloc, path)):
-    return '%s%s%s' % ('%s://' % scheme if scheme else '',
-                       '%s/' % (netloc, ) if netloc else '',
-                       path)
+def urljoin(scheme_netloc_path):
+    scheme, netloc, path = scheme_netloc_path
+    return ('{0}{1}{2}'.format('{0}://'.format(scheme) if scheme else '',
+                               '{0}/'.format(netloc) if netloc else '',
+                               path))
 
 def schemesplit(url):
-    return url.split('://', 1) if '://' in url else ('', url)
+    return bytes_to_str(url).split('://', 1) if '://' in bytes_to_str(url) else ('', url)
 
 def localize(path, ddfs_data=None, disco_data=None):
     prefix, fname = path.split('/', 1)
@@ -179,22 +176,23 @@ def urlsplit(url, localhost=None, disco_port=None, **kwargs):
                 path = localize(path, **kwargs)
             elif scheme == 'disco':
                 scheme = 'http'
-                locstr = '%s:%s' % (host, disco_port)
+                locstr = '{0}:{1}'.format(host, disco_port)
     return scheme, netloc.parse(locstr), path
 
 def urlresolve(url, master=None):
-    def _master((host, port)):
+    def _master(host_port):
+        host, port = host_port
         if not host:
             return master or DiscoSettings()['DISCO_MASTER']
         if not port:
-            return 'disco://%s' % host
-        return 'http://%s:%s' % (host, port)
+            return 'disco://{0}'.format(host)
+        return 'http://{0}:{1}'.format(host, port)
     scheme, netloc, path = urlsplit(url)
     if scheme == 'dir':
-        return urlresolve('%s/%s' % (_master(netloc), path))
+        return urlresolve('{0}/{1}'.format(_master(netloc), path))
     if scheme == 'tag':
-        return urlresolve('%s/ddfs/tag/%s' % (_master(netloc), path))
-    return '%s://%s/%s' % (scheme, netloc, path)
+        return urlresolve('{0}/ddfs/tag/{1}'.format(_master(netloc), path))
+    return '{0}://{1}/{2}'.format(scheme, netloc, path)
 
 def urltoken(url):
     _scheme, rest = schemesplit(url)
@@ -202,38 +200,6 @@ def urltoken(url):
     if '@' in locstr:
         auth = locstr.split('@', 1)[0]
         return auth.split(':')[1] if ':' in auth else auth
-
-def msg(message):
-    """
-    .. deprecated:: 0.4 use **print** instead.
-
-    Sends the string *message* to the master for logging. The message is
-    shown on the web interface. To prevent a rogue job from overwhelming the
-    master, the maximum *message* size is set to 255 characters and job is
-    allowed to send at most 10 messages per second.
-    """
-    print message
-
-def err(message):
-    """
-    .. deprecated:: 0.4
-                    raise :class:`disco.error.DiscoError` instead.
-
-    Raises a :class:`disco.error.DiscoError`. This terminates the job.
-    """
-    raise DiscoError(message)
-
-def data_err(message, url):
-    """
-    .. deprecated:: 0.4
-                    raise :class:`disco.error.DataError` instead.
-
-    Raises a :class:`disco.error.DataError`.
-    A data error should only be raised if it is likely that the error is transient.
-    Typically this function is used by map readers to signal a temporary failure
-    in accessing an input file.
-    """
-    raise DataError(message, url)
 
 def jobname(url):
     """
@@ -253,7 +219,7 @@ def jobname(url):
     scheme, x, path = urlsplit(url)
     if scheme in ('disco', 'dir', 'http'):
         return path.strip('/').split('/')[-2]
-    raise DiscoError("Cannot parse jobname from %s" % url)
+    raise DiscoError("Cannot parse jobname from {0}".format(url))
 
 def external(files):
     from disco.worker.classic.external import package
@@ -264,7 +230,7 @@ def deref(inputs, resolve=False):
     for input in inputlist(inputs):
         yield [resolve(i) for i in iterify(input)]
 
-def parse_dir(dir, partition=None):
+def parse_dir(dir, label=None):
     """
     Translates a directory URL (``dir://...``) to a list of normal URLs.
 
@@ -274,46 +240,51 @@ def parse_dir(dir, partition=None):
     :param dir: a directory url, such as ``dir://nx02/test_simple@12243344``
     """
     # XXX: guarantee indices are read in the same order (task/labels) (for redundancy)
-    return [url for id, url in sorted(read_index(dir)) if partition in (None, id)]
+    return [url for lab, url, size in sorted(read_index(dir)) if label in (None, lab)]
 
 def proxy_url(url, proxy=DiscoSettings()['DISCO_PROXY'], meth='GET', to_master=True):
     scheme, (host, port), path = urlsplit(url)
-    if proxy and scheme != "tag":
+    # if the url contains a dot, it is an external resource, so do not proxy it
+    if proxy and scheme == "http" and url.find('.') == -1:
         if to_master:
-            return '%s/%s' % (proxy, path)
-        return '%s/proxy/%s/%s/%s' % (proxy, host, meth, path)
+            return '{0}/{1}'.format(proxy, path)
+        return '{0}/proxy/{1}/{2}/{3}'.format(proxy, host, meth, path)
     return url
 
 def read_index(dir):
+    # We might be given replicas of dirs; choose the first.
+    if isiterable(dir): dir = dir[0]
     from disco.comm import open_url
     file = open_url(proxy_url(dir, to_master=False))
     if dir.endswith(".gz"):
         file = gzip.GzipFile(fileobj=file)
     for line in file:
-        yield line.split()
+        label, url, size = bytes_to_str(line).split()
+        yield int(label), url, int(size)
 
 def ispartitioned(input):
     if isiterable(input):
         return all(ispartitioned(i) for i in input) and len(input)
     return input.startswith('dir://')
 
-def inputexpand(input, partition=None, settings=DiscoSettings()):
+def inputexpand(input, label=None, settings=DiscoSettings()):
     from disco.ddfs import DDFS, istag
-    if ispartitioned(input) and partition is not False:
-        return zip(*(parse_dir(i, partition=partition) for i in iterify(input)))
+    if ispartitioned(input) and label is not False:
+        return zip(*(parse_dir(i, label=label) for i in iterify(input)))
     if isiterable(input):
-        return [inputlist(input, partition=partition, settings=settings)]
+        return [inputlist(input, label=label, settings=settings)]
     if istag(input):
         ddfs = DDFS(settings=settings)
         return chainify(blobs for name, tags, blobs in ddfs.findtags(input))
     return [input]
 
 def inputlist(inputs, **kwargs):
-    return filter(None, chainify(inputexpand(input, **kwargs) for input in inputs))
+    return [inp for inp in chainify(inputexpand(input, **kwargs)
+                                    for input in inputs) if inp]
 
 def save_oob(host, name, key, value, ddfs_token=None):
     from disco.ddfs import DDFS
-    DDFS(host).push(DDFS.job_oob(name), [(StringIO(value), key)], delayed=True)
+    DDFS(host).push(DDFS.job_oob(name), [(BytesIO(value), key)], delayed=True)
 
 def load_oob(host, name, key):
     from disco.ddfs import DDFS
@@ -326,5 +297,76 @@ def load_oob(host, name, key):
 def format_size(num):
     for unit in [' bytes','KB','MB','GB','TB']:
         if num < 1024.:
-            return "%3.1f%s" % (num, unit)
+            return "{0:3.1f}{1}".format(num, unit)
         num /= 1024.
+
+def unix_sort(filename, sort_buffer_size='10%'):
+    import subprocess, os.path
+    if not os.path.isfile(filename):
+        raise DataError("Invalid sort input file {0}".format(filename), filename)
+    try:
+        env = os.environ.copy()
+        env['LC_ALL'] = 'C'
+        cmd, shell = sort_cmd(filename, sort_buffer_size)
+        subprocess.check_call(cmd, env=env, shell=shell)
+    except subprocess.CalledProcessError as e:
+        raise DataError("Sorting {0} failed: {1}".format(filename, e), filename)
+
+
+def encode(p0):
+    p1 = p0.replace(b'\x01', b'\x01\x01')
+    p2 = p1.replace(b'\x02', b'\x02\x02')
+    p3 = p2.replace(b'\x00', b'\x02\x01\x02')
+    return p3
+
+def decode(p0):
+    p1 = p0.replace(b'\x02\x01\x02', b'\x00')
+    p2 = p1.replace(b'\x02\x02', b'\x02')
+    p3 = p2.replace(b'\x01\x01', b'\x01')
+    return p3
+
+def sort_reader(fd, fname, read_buffer_size=8192):
+    buf = b""
+    while True:
+        r = fd.read(read_buffer_size)
+        if not len(r):
+            break
+        if len(buf) > read_buffer_size:
+            raise DataError("Could not parse the sorted file.", fname)
+        buf += r
+        keyValues = buf.split(b"\x00")
+        buf = keyValues[-1]
+        for keyValue in keyValues[:-1]:
+            key, value = keyValue.split(b"\xff")
+            yield key, value
+
+    if len(buf):
+        raise DataError("Could not parse the tail of the sorted file.", fname)
+
+def disk_sort(worker, input, filename, sort_buffer_size='10%'):
+    from os.path import getsize
+    from disco.comm import open_local
+    from disco.fileutils import AtomicFile
+    from disco.worker.task_io import re_reader
+    if worker:
+        worker.send('MSG', "Downloading {0}".format(filename))
+    out_fd = AtomicFile(filename)
+    for key, value in input:
+        if not isinstance(key, bytes):
+            raise ValueError("Keys must be bytes for external sort", key)
+        if b'\xff' in key or b'\x00' in key:
+            raise ValueError("Cannot sort key with 0xFF or 0x00 bytes", key)
+        else:
+            # value pickled using protocol 0 will always be printable ASCII
+            out_fd.write(key + b'\xff')
+            out_fd.write(encode(pickle_dumps(value, 0)) + b'\x00')
+    out_fd.close()
+    if worker:
+        worker.send('MSG', "Downloaded {0:s} OK".format(format_size(getsize(filename))))
+        worker.send('MSG', "Sorting {0}...".format(filename))
+    unix_sort(filename, sort_buffer_size=sort_buffer_size)
+    if worker:
+        worker.send('MSG', ("Finished sorting"))
+    fd = open_local(filename)
+    for k, v in sort_reader(fd, fd.url):
+        yield k, pickle_loads(decode(v))

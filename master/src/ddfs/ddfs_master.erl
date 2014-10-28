@@ -8,8 +8,8 @@
          get_hosted_tags/1,
          gc_blacklist/0, gc_blacklist/1,
          gc_stats/0,
-         choose_write_nodes/2,
-         new_blob/3, new_blob/4,
+         choose_write_nodes/3,
+         new_blob/4, new_blob/5,
          safe_gc_blacklist/0, safe_gc_blacklist/1,
          refresh_tag_cache/0,
          tag_notify/2,
@@ -36,15 +36,15 @@
 -type node_info() :: {node(), {non_neg_integer(), non_neg_integer()}}.
 -type gc_stats() :: none | gc_run_stats().
 
--record(state, {tags      = gb_trees:empty() :: gb_tree(),
-                tag_cache = false            :: false | gb_set(),
-                cache_refresher              :: pid(),
+-record(state, {tags      = gb_trees:empty()          :: disco_gbtree(tagname(),pid()),
+                tag_cache = {false, gb_sets:empty()}  :: {boolean(), disco_gbset(tagname())},
+                cache_refresher                       :: pid(),
 
                 nodes             = []                :: [node_info()],
                 write_blacklist   = []                :: [node()],
                 read_blacklist    = []                :: [node()],
                 gc_blacklist      = []                :: [node()],
-                safe_gc_blacklist = gb_sets:empty()   :: gb_set(),
+                safe_gc_blacklist = gb_sets:empty()   :: disco_gbset(tagname()),
                 gc_stats          = none              :: none | {gc_stats(), erlang:timestamp()}}).
 -type state() :: #state{}.
 -type replyto() :: {pid(), reference()}.
@@ -65,7 +65,7 @@ start_link() ->
 -spec tag_operation(term(), tagname()) -> term().
 tag_operation(Op, Tag) ->
     gen_server:call(?MODULE, {tag, Op, Tag}).
--spec tag_operation(term(), tagname(), non_neg_integer()) ->
+-spec tag_operation(term(), tagname(), non_neg_integer() | infinity) ->
                            term().
 tag_operation(Op, Tag, Timeout) ->
     gen_server:call(?MODULE, {tag, Op, Tag}, Timeout).
@@ -80,7 +80,7 @@ get_nodeinfo(all) ->
 
 -spec get_read_nodes() -> {ok, [node()], non_neg_integer()} | {error, term()}.
 get_read_nodes() ->
-    gen_server:call(?MODULE, get_read_nodes).
+    gen_server:call(?MODULE, get_read_nodes, infinity).
 
 -spec gc_blacklist() -> {ok, [node()]}.
 gc_blacklist() ->
@@ -98,9 +98,9 @@ gc_stats() ->
 get_hosted_tags(Host) ->
     gen_server:call(?MODULE, {get_hosted_tags, Host}).
 
--spec choose_write_nodes(non_neg_integer(), [node()]) -> {ok, [node()]}.
-choose_write_nodes(K, Exclude) ->
-    gen_server:call(?MODULE, {choose_write_nodes, K, Exclude}).
+-spec choose_write_nodes(non_neg_integer(), [node()], [node()]) -> {ok, [node()]}.
+choose_write_nodes(K, Include, Exclude) ->
+    gen_server:call(?MODULE, {choose_write_nodes, K, Include, Exclude}).
 
 -spec get_tags(gc) -> {ok, [tagname()], [node()]} | too_many_failed_nodes;
               (safe) -> {ok, [binary()]} | too_many_failed_nodes.
@@ -112,23 +112,25 @@ get_tags(Mode) ->
               (server(), safe, non_neg_integer()) ->
                       {ok, [binary()]} | too_many_failed_nodes.
 get_tags(Server, Mode, Timeout) ->
-    gen_server:call(Server, {get_tags, Mode}, Timeout).
+    disco_profile:timed_run(
+        fun() -> gen_server:call(Server, {get_tags, Mode}, Timeout) end,
+        get_tags).
 
--spec new_blob(string()|object_name(), non_neg_integer(), [node()]) ->
+-spec new_blob(string()|object_name(), non_neg_integer(), [node()], [node()]) ->
                       too_many_replicas | {ok, [nonempty_string()]}.
-new_blob(Obj, K, Exclude) ->
-    gen_server:call(?MODULE, {new_blob, Obj, K, Exclude}).
+new_blob(Obj, K, Include, Exclude) ->
+    gen_server:call(?MODULE, {new_blob, Obj, K, Include, Exclude}, infinity).
 
--spec new_blob(server(), string()|object_name(), non_neg_integer(), [node()]) ->
+-spec new_blob(server(), string()|object_name(), non_neg_integer(), [node()], [node()]) ->
                       too_many_replicas | {ok, [nonempty_string()]}.
-new_blob(Master, Obj, K, Exclude) ->
-    gen_server:call(Master, {new_blob, Obj, K, Exclude}).
+new_blob(Master, Obj, K, Include, Exclude) ->
+    gen_server:call(Master, {new_blob, Obj, K, Include, Exclude}, infinity).
 
 -spec safe_gc_blacklist() -> {ok, [node()]} | {error, term()}.
 safe_gc_blacklist() ->
     gen_server:call(?MODULE, safe_gc_blacklist).
 
--spec safe_gc_blacklist(gb_set()) -> ok.
+-spec safe_gc_blacklist(disco_gbset(tagname())) -> ok.
 safe_gc_blacklist(SafeGCBlacklist) ->
     gen_server:cast(?MODULE, {safe_gc_blacklist, SafeGCBlacklist}).
 
@@ -141,11 +143,11 @@ update_gc_stats(Stats) ->
 update_nodes(DDFSNodes) ->
     gen_server:cast(?MODULE, {update_nodes, DDFSNodes}).
 
--spec update_nodestats(gb_tree()) -> ok.
+-spec update_nodestats(disco_gbtree(tagname(),pid())) -> ok.
 update_nodestats(NewNodes) ->
     gen_server:cast(?MODULE, {update_nodestats, NewNodes}).
 
--spec update_tag_cache(gb_set()) -> ok.
+-spec update_tag_cache(disco_gbset(tagname())) -> ok.
 update_tag_cache(TagCache) ->
     gen_server:cast(?MODULE, {update_tag_cache, TagCache}).
 
@@ -158,13 +160,16 @@ refresh_tag_cache() ->
 
 -spec init(_) -> gs_init().
 init(_Args) ->
+    _ = [disco_profile:new_histogram(Name)
+        || Name <- [get_tags, do_get_tags_all, do_get_tags_filter,
+            do_get_tags_safe, do_get_tags_gc]],
     spawn_link(fun() -> monitor_diskspace() end),
-    spawn_link(fun() -> ddfs_gc:start_gc(disco:get_setting("DDFS_DATA")) end),
+    spawn_link(ddfs_gc, start_gc, [disco:get_setting("DDFS_DATA")]),
     Refresher = spawn_link(fun() -> refresh_tag_cache_proc() end),
     put(put_port, disco:get_setting("DDFS_PUT_PORT")),
     {ok, #state{cache_refresher = Refresher}}.
 
--type choose_write_nodes_msg() :: {choose_write_nodes, non_neg_integer(), [node()]}.
+-type choose_write_nodes_msg() :: {choose_write_nodes, non_neg_integer(), [node()], [node()]}.
 -type new_blob_msg() :: {new_blob, string() | object_name(), non_neg_integer(), [node()]}.
 -type tag_msg() :: {tag, ddfs_tag:call_msg(), tagname()}.
 -spec handle_call(dbg_state_msg(), from(), state()) ->
@@ -204,15 +209,15 @@ handle_call(gc_blacklist, _F, #state{gc_blacklist = Nodes} = S) ->
 handle_call(gc_stats, _F, #state{gc_stats = Stats} = S) ->
     {reply, {ok, Stats}, S};
 
-handle_call({choose_write_nodes, K, Exclude}, _,
+handle_call({choose_write_nodes, K, Include, Exclude}, _,
             #state{nodes = N, write_blacklist = WBL, gc_blacklist = GBL} = S) ->
     BL = lists:umerge(WBL, GBL),
-    {reply, do_choose_write_nodes(N, K, Exclude, BL), S};
+    {reply, do_choose_write_nodes(N, K, Include, Exclude, BL), S};
 
-handle_call({new_blob, Obj, K, Exclude}, _,
+handle_call({new_blob, Obj, K, Include, Exclude}, _,
             #state{nodes = N, gc_blacklist = GBL, write_blacklist = WBL} = S) ->
     BL = lists:umerge(WBL, GBL),
-    {reply, do_new_blob(Obj, K, Exclude, BL, N), S};
+    {reply, do_new_blob(Obj, K, Include, Exclude, BL, N), S};
 
 handle_call({tag, _M, _Tag}, _From, #state{nodes = []} = S) ->
     {reply, {error, no_nodes}, S};
@@ -235,12 +240,12 @@ handle_call(safe_gc_blacklist, _From, #state{safe_gc_blacklist = SBL} = S) ->
 
 -spec handle_cast({tag_notify, ddfs_tag:cast_msg(), tagname()}
                   | {gc_blacklist, [node()]}
-                  | {safe_gc_blacklist, gb_set()}
+                  | {safe_gc_blacklist, disco_gbset(tagname())}
                   | {update_gc_stats, gc_stats()}
-                  | {update_tag_cache, gb_set()}
+                  | {update_tag_cache, disco_gbset(tagname())}
                   | refresh_tag_cache
                   | {update_nodes, nodes_update()}
-                  | {update_nodestats, gb_tree()},
+                  | {update_nodestats, disco_gbtree(tagname(),pid())},
                   state()) -> gs_noreply().
 handle_cast({tag_notify, M, Tag}, S) ->
     {noreply, do_tag_notify(M, Tag, S)};
@@ -259,7 +264,7 @@ handle_cast({update_gc_stats, Stats}, S) ->
     {noreply, S#state{gc_stats = {Stats, now()}}};
 
 handle_cast({update_tag_cache, TagCache}, S) ->
-    {noreply, S#state{tag_cache = TagCache}};
+    {noreply, S#state{tag_cache = {true, TagCache}}};
 
 handle_cast(refresh_tag_cache, #state{cache_refresher = Refresher} = S) ->
     Refresher ! refresh,
@@ -296,9 +301,9 @@ do_get_readable_nodes(Nodes, ReadBlacklist) ->
     ReadableNodeSet = gb_sets:subtract(NodeSet, BlackSet),
     {ok, gb_sets:to_list(ReadableNodeSet), gb_sets:size(BlackSet)}.
 
--spec do_choose_write_nodes([node_info()], non_neg_integer(), [node()], [node()]) ->
-                                   {ok, [node()]}.
-do_choose_write_nodes(Nodes, K, Exclude, BlackList) ->
+do_choose_write_nodes(Nodes, K, Include, Exclude, BlackList, false) ->
+    % Include is the list of nodes that must be included
+    %
     % Node selection algorithm:
     % 1. try to choose K nodes randomly from all the nodes which have
     %    more than ?MIN_FREE_SPACE bytes free space available and which
@@ -308,20 +313,39 @@ do_choose_write_nodes(Nodes, K, Exclude, BlackList) ->
     Primary = ([N || {N, {Free, _Total}} <- Nodes, Free > ?MIN_FREE_SPACE / 1024]
                -- (Exclude ++ BlackList)),
     if length(Primary) >= K ->
-            {ok, disco_util:choose_random(Primary, K)};
+            {ok, Include ++ disco_util:choose_random(Primary -- Include , K - length(Include))};
        true ->
             Preferred = [N || {N, _} <- lists:reverse(lists:keysort(2, Nodes))],
-            Secondary = lists:sublist(Preferred -- (Exclude ++ BlackList), K),
+            Secondary = Include ++ lists:sublist(Preferred -- (Include ++ Exclude ++ BlackList),
+                                                 K - length(Include)),
             {ok, Secondary}
+    end;
+
+do_choose_write_nodes(Nodes, K, Include, Exclude, BlackList, true) ->
+    NotCandidates = Exclude ++ BlackList ++ Include,
+    Primary = [Node || ({N, {Free, _Total}} = Node) <- Nodes,
+        Free > ?MIN_FREE_SPACE / 1024, not lists:member(N, NotCandidates)],
+    case ddfs_rebalance:weighted_select_from_nodes(Primary, K - length(Include)) of
+        error    ->
+            do_choose_write_nodes(Nodes, K - length(Include), Include,
+                Exclude, BlackList, false);
+        Selected ->
+            {ok, Include ++ Selected}
     end.
 
+-spec do_choose_write_nodes([node_info()], non_neg_integer(), [node()], [node()], [node()]) ->
+                                   {ok, [node()]}.
+do_choose_write_nodes(Nodes, K, Include, Exclude, BlackList) ->
+    do_choose_write_nodes(Nodes, K, Include, Exclude, BlackList,
+        disco:has_setting("DDFS_SPACE_AWARE")).
+
 -type new_blob_result() :: too_many_replicas | {ok, [nonempty_string()]}.
--spec do_new_blob(string()|object_name(), non_neg_integer(), [node()], [node()], [node_info()]) ->
+-spec do_new_blob(string()|object_name(), non_neg_integer(), [node()], [node()], [node()], [node_info()]) ->
                          new_blob_result().
-do_new_blob(_Obj, K, _Exclude, _BlackList, Nodes) when K > length(Nodes) ->
+do_new_blob(_Obj, K, _Include, _Exclude, _BlackList, Nodes) when K > length(Nodes) ->
     too_many_replicas;
-do_new_blob(Obj, K, Exclude, BlackList, Nodes) ->
-    {ok, WriteNodes} = do_choose_write_nodes(Nodes, K, Exclude, BlackList),
+do_new_blob(Obj, K, Include, Exclude, BlackList, Nodes) ->
+    {ok, WriteNodes} = do_choose_write_nodes(Nodes, K, Include, Exclude, BlackList),
     Urls = [["http://", disco:host(N), ":", get(put_port), "/ddfs/", Obj]
             || N <- WriteNodes],
     {ok, Urls}.
@@ -329,13 +353,16 @@ do_new_blob(Obj, K, Exclude, BlackList, Nodes) ->
 % Tag request: Start a new tag server if one doesn't exist already. Forward
 % the request to the tag server.
 
--spec get_tag_pid(tagname(), gb_tree(), false | gb_set()) ->
-                         {pid(), gb_tree()}.
-get_tag_pid(Tag, Tags, Cache) ->
+-spec get_tag_pid(tagname(), disco_gbtree(tagname(),pid()), {boolean(),
+                  disco_gbset(tagname())}) ->
+    {pid(), disco_gbtree(tagname(), pid())}.
+get_tag_pid(Tag, Tags, {Valid, Cache}) ->
     case gb_trees:lookup(Tag, Tags) of
         none ->
-            NotFound = (Cache =/= false
-                        andalso not gb_sets:is_element(Tag, Cache)),
+            NotFound = case Valid of
+                true -> not gb_sets:is_element(Tag, Cache);
+                false -> false
+            end,
             {ok, Server} = ddfs_tag:start(Tag, NotFound),
             erlang:monitor(process, Server),
             {Server, gb_trees:insert(Tag, Server, Tags)};
@@ -345,18 +372,22 @@ get_tag_pid(Tag, Tags, Cache) ->
 
 -spec do_tag_request(term(), tagname(), replyto(), state()) ->
                             state().
-do_tag_request(M, Tag, From, #state{tags = Tags, tag_cache = Cache} = S) ->
-    {Pid, TagsN} = get_tag_pid(Tag, Tags, Cache),
+do_tag_request(M, Tag, From, #state{tags = Tags, tag_cache = {Valid, Cache}} = S) ->
+    {Pid, TagsN} = get_tag_pid(Tag, Tags, {Valid, Cache}),
     gen_server:cast(Pid, {M, From}),
-    S#state{tags = TagsN,
-            tag_cache = Cache =/= false andalso gb_sets:add(Tag, Cache)}.
+    case Valid of
+        true -> S#state{tags = TagsN, tag_cache = {true, gb_sets:add(Tag, Cache)}};
+        false -> S#state{tags = TagsN}
+    end.
 
 -spec do_tag_notify(term(), tagname(), state()) -> state().
-do_tag_notify(M, Tag, #state{tags = Tags, tag_cache = Cache} = S) ->
-    {Pid, TagsN} = get_tag_pid(Tag, Tags, Cache),
+do_tag_notify(M, Tag, #state{tags = Tags, tag_cache = {Valid, Cache}} = S) ->
+    {Pid, TagsN} = get_tag_pid(Tag, Tags, {Valid, Cache}),
     gen_server:cast(Pid, {notify, M}),
-    S#state{tags = TagsN,
-            tag_cache = Cache =/= false andalso gb_sets:add(Tag, Cache)}.
+    case Valid of
+        true -> S#state{tags = TagsN, tag_cache = {true, gb_sets:add(Tag, Cache)}};
+        false -> S#state{tags = TagsN}
+    end.
 
 -spec do_update_nodes(nodes_update(), state()) -> state().
 do_update_nodes(NewNodes, #state{nodes = Nodes, tags = Tags} = S) ->
@@ -380,14 +411,14 @@ do_update_nodes(NewNodes, #state{nodes = Nodes, tags = Tags} = S) ->
             S#state{nodes = UpdatedNodes,
                     write_blacklist = WriteBlacklist,
                     read_blacklist = ReadBlacklist,
-                    tag_cache = false,
+                    tag_cache = {false, gb_sets:empty()},
                     tags = gb_trees:empty()};
         true ->
             S#state{write_blacklist = WriteBlacklist,
                     read_blacklist = ReadBlacklist}
     end.
 
--spec do_update_nodestats(gb_tree(), state()) -> state().
+-spec do_update_nodestats(disco_gbtree(tagname(),pid()), state()) -> state().
 do_update_nodestats(NewNodes, #state{nodes = Nodes} = S) ->
     UpdatedNodes = [case gb_trees:lookup(Node, NewNodes) of
                         none ->
@@ -406,49 +437,61 @@ do_tag_exit(Pid, S) ->
                  (safe, [node()]) -> {ok, [binary()]} | too_many_failed_nodes;
                  (gc, [node()]) -> {ok, [binary()], [node()]} | too_many_failed_nodes.
 do_get_tags(all, Nodes) ->
-    {Replies, Failed} =
-        gen_server:multi_call(Nodes, ddfs_node, get_tags, ?NODE_TIMEOUT),
-    {OkNodes, Tags} = lists:unzip(Replies),
-    {OkNodes, Failed, lists:usort(lists:flatten(Tags))};
+    disco_profile:timed_run(
+        fun() ->
+            {Replies, Failed} =
+                gen_server:multi_call(Nodes, ddfs_node, get_tags, ?NODE_TIMEOUT),
+            {OkNodes, Tags} = lists:unzip(Replies),
+            {OkNodes, Failed, lists:usort(lists:flatten(Tags))}
+        end, do_get_tags_all);
 
 do_get_tags(filter, Nodes) ->
-    {OkNodes, Failed, Tags} = do_get_tags(all, Nodes),
-    case tag_operation(get_tagnames, <<"+deleted">>, ?NODEOP_TIMEOUT) of
-        {ok, Deleted} ->
-            TagSet = gb_sets:from_ordset(Tags),
-            DelSet = gb_sets:insert(<<"+deleted">>, Deleted),
-            NotDeleted = gb_sets:to_list(gb_sets:subtract(TagSet, DelSet)),
-            {OkNodes, Failed, NotDeleted};
-        E ->
-            E
-    end;
-
-do_get_tags(safe, Nodes) ->
-    TagMinK = list_to_integer(disco:get_setting("DDFS_TAG_MIN_REPLICAS")),
-    case do_get_tags(filter, Nodes) of
-        {_OkNodes, Failed, Tags} when length(Failed) < TagMinK ->
-            {ok, Tags};
-        _ ->
-            too_many_failed_nodes
-    end;
-
-% The returned tag list may include +deleted.
-do_get_tags(gc, Nodes) ->
-    {OkNodes, Failed, Tags} = do_get_tags(all, Nodes),
-    TagMinK = list_to_integer(disco:get_setting("DDFS_TAG_MIN_REPLICAS")),
-    case length(Failed) < TagMinK of
-        false ->
-            too_many_failed_nodes;
-        true ->
+    disco_profile:timed_run(
+        fun() ->
+            {OkNodes, Failed, Tags} = do_get_tags(all, Nodes),
             case tag_operation(get_tagnames, <<"+deleted">>, ?NODEOP_TIMEOUT) of
                 {ok, Deleted} ->
                     TagSet = gb_sets:from_ordset(Tags),
-                    NotDeleted = gb_sets:subtract(TagSet, Deleted),
-                    {ok, gb_sets:to_list(NotDeleted), OkNodes};
+                    DelSet = gb_sets:insert(<<"+deleted">>, Deleted),
+                    NotDeleted = gb_sets:to_list(gb_sets:subtract(TagSet, DelSet)),
+                    {OkNodes, Failed, NotDeleted};
                 E ->
                     E
             end
-    end.
+        end, do_get_tags_filter);
+
+do_get_tags(safe, Nodes) ->
+    disco_profile:timed_run(
+        fun() ->
+            TagMinK = list_to_integer(disco:get_setting("DDFS_TAG_MIN_REPLICAS")),
+            case do_get_tags(filter, Nodes) of
+                {_OkNodes, Failed, Tags} when length(Failed) < TagMinK ->
+                    {ok, Tags};
+                _ ->
+                    too_many_failed_nodes
+            end
+        end, do_get_tags_safe);
+
+% The returned tag list may include +deleted.
+do_get_tags(gc, Nodes) ->
+    disco_profile:timed_run(
+        fun() ->
+            {OkNodes, Failed, Tags} = do_get_tags(all, Nodes),
+            TagMinK = list_to_integer(disco:get_setting("DDFS_TAG_MIN_REPLICAS")),
+            case length(Failed) < TagMinK of
+                false ->
+                    too_many_failed_nodes;
+                true ->
+                    case tag_operation(get_tagnames, <<"+deleted">>, ?NODEOP_TIMEOUT) of
+                        {ok, Deleted} ->
+                            TagSet = gb_sets:from_ordset(Tags),
+                            NotDeleted = gb_sets:subtract(TagSet, Deleted),
+                            {ok, gb_sets:to_list(NotDeleted), OkNodes};
+                        E ->
+                            E
+                    end
+            end
+        end, do_get_tags_gc).
 
 % Timeouts in this call by the below processes can cause ddfs_master
 % itself to crash, since the processes are linked to it.

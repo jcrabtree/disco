@@ -4,26 +4,14 @@
 -include_lib("kernel/include/file.hrl").
 
 -include("common_types.hrl").
--include("config.hrl").
 -include("ddfs.hrl").
 
 -export([start/2, serve_ddfs_file/3, serve_disco_file/3]).
 
 -spec start(non_neg_integer(), {path(), path()}) -> {ok, pid()} | {error, term()}.
 start(Port, Roots) ->
-    Ret = mochiweb_http:start([{name, ddfs_get},
-                               {max, ?HTTP_MAX_CONNS},
-                               {loop, fun(Req) ->
-                                              loop(Req:get(raw_path), Req, Roots)
-                                      end},
-                               {port, Port}]),
-    case Ret of
-        {ok, _Pid} -> error_logger:info_msg("Started ~p at ~p on port ~p",
-                                            [?MODULE, node(), Port]);
-        E ->          error_logger:error_msg("~p failed at ~p on port ~p: ~p",
-                                             [?MODULE, node(), Port, E])
-    end,
-    Ret.
+    ddfs_util:start_web(Port, fun(Req) -> loop(Req:get(raw_path), Req, Roots) end,
+        ?MODULE).
 
 -spec serve_ddfs_file(path(), path(), module()) -> _.
 serve_ddfs_file(DdfsRoot, Path, Req) ->
@@ -73,8 +61,8 @@ send_file(Req, Path, Root) ->
                                       "Try again later"]})
                 end
             catch K:V ->
-                    error_logger:info_msg("~p: error getting ~p: ~p:~p",
-                                          [?MODULE, Path, K, V]),
+                    error_logger:info_msg("~p: error getting ~p on ~p: ~p:~p",
+                                          [?MODULE, Path, node(), K, V]),
                     Req:respond({403, [], ["Disco node is busy"]})
             end;
         _ ->
